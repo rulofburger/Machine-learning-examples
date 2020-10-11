@@ -1,0 +1,380 @@
+---
+title: "Modelling regression trees with R's caret package"
+author: "Rulof Burger"
+date: "22 June 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(rpart)
+library(dplyr)
+
+load("D:/My Documents/R/R code/NIDS analysis/Tree comparison/Tree environment V3.RData")
+
+```
+
+
+
+# 1. Introduction
+
+This document explores the use of regression tree models implemented via R's `caret` package. It uses different estimators to model the household income of a sample of South African households using a variety of continuous and categorical predictors. Model performance, running time and relative merits of different approaches are compared.
+
+
+
+# 2. Data and research question
+
+The objective is to fit log per capita household income as accurately as possible using a variety of other variables. Household income is notoriously dificult to measure well with surveys, whereas some of its correlates (e.g. asset ownership, number of household members) are comparitively easy to measure. Obtaining a prediction function that maps household attributes onto household income could there make it easier to identify and target poor households for government transfers using variables that are easier to verify than household income. 
+
+The NIDS wave 1 data contains 6,242 households. We model household income using 4 predictors that are roughly continuous (numbers of household members and dwelling rooms, as well as the household head's age and years of completed education) and 29 nominal variables (including province and district council, dwelling attributes, household assets, the availability of various utilities and the demographic attributes of the household head). Observations with very uncommon values of these nominal variables are dropped because of problems this causes with cross-validation (you cannot predict the effect of an attribute that is unobserved in the training data), and these variables are transformed to 191 binary variables using the `dummy.data.frame` function. The final data set is called `hhdata.full`.
+
+
+### 2.1 Data splitting
+
+We randomly split the data into training and testing samples that comprise 75% and 25% of the original sample, repsectively, using `caret`'s `createDataPartition` function. The seed is set in order to ensure the replicability of our results. 
+
+```{r eval = FALSE}
+set.seed(7)
+inTrain = createDataPartition(y=income,p=0.75,list=F)
+training= hhdata.full[inTrain,]
+testing= hhdata.full[-inTrain,]
+```
+
+
+### 2.2 Model training and tuning
+
+The preferred measure of model performance for this exercise will be the 10-fold cross-validated RMSE averaged over 10 repeats. We can tell `caret`'s training function to use this measure by setting the `trainControl` function parameters. Computing time can be considerably reduced by lowering the number of cross-validataion folds or the number of repeats, but this comes at the cost of less reliable estimates of the out-of-sample fit, and hence also parameter values that are tuned less accurately.
+
+```{r eval = FALSE}
+fitControl <- trainControl(method = "repeatedcv", number = 10, repeats = 10, verboseIter = TRUE, allowParallel = TRUE)
+```
+
+Specifying the `verboseIter` option in the train function means information about progress with the training process will be printed to  screen. Since computing time varies considerably across different estimators, these printed tranining logs allow you to anticipate how much longer the procedure will require to produce results. The logs indicate which repeat, CV fold and parameter values it is currently estimating. For some estimators the printed parameter values are misleading, but since these values are iterated within repeats and folds this should not cause too much confusion regarding expected running times. Unfortunately the `verboseIter` option does not work when using parallel processing.
+
+Many tree-based models in R allow for parallel processing, which reduces computing time. The code below initiates parallel processing on R for Windows. It assigns all but one of the cores to R (one core is left to the operating system) to estimate the model for different folds of the cross-validation. 
+
+```{r eval = FALSE}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+```
+
+Once the parallel processing is done, the unused cores can be released with the following commands:
+
+```{r eval = FALSE}
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+In order to evaluate the predictive accuracy of our models, we calculate three goodness-of-fit measures: the 10-fold cross-validated RMSE for the training set averaged over 10 repeats, the testing set RMSE, and the training data RMSE. We would expect the last metric to be over-optimistically low due to overfitting, especially for highly flexible specifications. The first two measures, on the other hand, should both be decent approximations of the model's ability to predict out-of-sample. The 10-fold CV RMSE has the drawback that it only estimates the model on 90% of the training set data, whereas the final model will be estimated on 100% of the data. The smaller sample size could bias the RMSE for some estimators, but given our relatively large sample size  this is unlikely to be an important problem. The fact that the final CV RMSE is averaged across 100 different estimates means this measure should be quite precise. The testing sample RMSE directly evaluates how the final model performs out-of sample, so provides an unbiased estimate of its performance. However, this measure is estimated only once and using only 25% of the sample (a third of the size of the training sample), so will be less precisely than the CV RMSE. Given our relativaly large sample, we wouldn't expect either measure to be substantially biased, and hence they should be quite similar in most applications. The CV RMSE's standard deviation will also be reported to provide a sense of the effect of sampling variability. 
+
+The code below is used to collect all four these measures into a vector that will be tabulated.
+
+```{r eval = FALSE}
+compare.rmse = function(model,training,testing) {
+  cv.train.rmse = model$results$RMSE
+  cv.train.rmse.sd = model$results$RMSESD
+  train.rmse = sqrt(mean((training$income - predict(model,training))^2))
+  test.rmse = sqrt(mean((testing$income - predict(model,testing))^2))
+  rmse=c(cv.train.rmse,cv.train.rmse.sd,train.rmse,test.rmse)
+  names(rmse)=c("CV RMSE","CV RMSE Std. Dev.","Training RMSE","Testing RMSE")
+  print(rmse)
+}
+```
+
+
+
+# 3. Linear regression
+
+We start by running an OLS regression of household income on all of the explanatory variables in the data. Only the training sample, which consists of 4,681 observavtions, is used to estimate this model.
+
+```{r eval = FALSE}
+formula = income ~ .
+train(formula, data = training, method = 'lm', trControl = fitControl)
+```
+
+```{r echo = F}
+summary(lm.fit$finalModel)
+lm.fit.rmse
+```
+Using `caret`'s `train` function rather than the conventional `lm` function has no effect on the model estimates, but allows us to obtain more appropriate measures for out-of-sample fit. The OLS regression output shows that it achieves an in-sample R-squared of 0.6083 and an residual standard error of 0.7529. The results from the cross-validation show a in-sample RMSE of 0.7403 (this differs from the residual standard error from the regression output on account of a degree of freedom adjustment). However, the CV RMSE is somewhat higher at 0.7692, which suggests a mild degree of over-optimistism in the in-sample goodness-of-fit measures. The testing set RMSE is higher than the CV estimate, but the difference is less than one standard deviation of the CV RMSE measure.
+
+Regression coefficients are simple to interpret, even where there are so many regressors. Notice that most variables are insignificant; even those that we would expect to be highly correlated with household income (e.g. type of dwelling, province). This is the cost of using a large number of imperfectly multicolinear regressors. The most significant predictors (p < 0.001) are: all four of the continuous variables (rooms, members, head.educ, head.age), one amenity (landline.working), seven assets (hifi.yes, satelite.yes, video.yes, computer.yes, camera.yes, microwave.yes, washer.yes), some DCs (Thabo.Mofutsanyane, Ugu, Mopani, Southern, Sisonke), and male headship. 
+
+```{r echo = F}
+lm.fit.tab
+```
+
+OLS only took about 30 seconds to estimate this model, even with repeated CVs. It takes about 20MB to store the complete model output, including coefficients, predicted values, variable labels and data. 
+
+```{r echo = F}
+varImp(lm.fit)
+```
+
+To aid comparison of the OLS results with those of the trees, we tabulate the most important predictors using `caret`'s `varImp` function. In the case of a linear model, these are simply the 20 variables with the higherst t-statistics, so it basically replicates the highly significant regressors listed earlier. 
+
+Next, we check whether any of the regression trees can outperform the linear regression model. 
+
+
+
+# 4. Simple tree-based models
+
+Regression trees are estimated using some variant of the following algorithm:
+
+(@) calculate the effect of splitting the sample between every adjacent pair of observed values of every explanatory variable;
+(@) indentify the split that leads to the greatest improvement of some measure of model fit that simultaneously conforms to the required splitting restrictions;
+(@) repeat until no remaining splits conform to all restrictions.
+
+Splitting restrictions (or stopping rules) include:
+
+1. the split must reduce the model fit by more than some minimum threshold;
+2. it cannot cause the tree to exceed its maximum dimensions (usually tree depth);
+3. it cannot produce nodes with fewer than the minimum allowable observations;
+
+When no split can meet all of the required restrictions, the algorithm terminates and the model estimation is complete. 
+
+Regression trees have several benefits over OLS models: 
+
+1. they do feature selection (by dropping unimportant regressors from the model);
+2. they reflect data-driven non-linearities and interaction effects in a way that OLS models can only do if such non-linearities and interaction effects are specified as regressors;
+3. they do not require pre-processing of variables, since the final model is unaffected my monotonic transformations in the regressors;
+4. small regression trees are deemed to be simpler to interpret
+
+They also have several drawbacks:
+
+1. the stepwise relationship between the regressors and outcome variable does not reflect the smooth relationships we often observe in practice; 
+2. trees produce higher-dimensional cubes in which all predicted values are fixed (as opposed to linear regressions for which even small differences in predictors produce different predicted values), which means it often cannot compete with linear regressions in terms of predictive accuracy;
+3. when the model is roughly linear in the regressor with no important interaction effects, regression trees will be unable to produce this relationship;
+4. large trees are usually more difficult to interpet than regressions models
+
+
+### 4.1 `rpart` function
+
+The `rpart' library in R estimates recursive partioning models. (Recursive partioning refers to the same class of estimators as categorical and regression trees (CART), but the latter is trademarked by the statisticians that developed it.) This function provides nine optional parameters, the first four of which can be used to tune the tree size and complexity:
+
+1. **cp**: the complexity parameter specifies the miminum improvement in fit (the R-squared) for any split to be enacted (default value is 0.01)
+2. **maxdepth**: the maximum depth of any node of the final tree (default is 30, and for reasons I do not fully understand "values greater than 30 rpart will give nonsense results on 32-bit machines".)
+3. **minsplit**: the minimun number of observations in a node before a split in this node is considered (default value is 20);
+4. **minbucket**: the minimum number of observations in either branch for a split to be enacted  (default value is round(minsplit/3), so 6);
+
+The remaining five options do not affect the final model, but do have an impact on the accuracy of the out-of-sample fit measures, the variable importance statistics and the predicted values for observations with missing values for splitting predictors. 
+
+5. **xval**: number of cross-validation folds from which to calculate CV RMSE (default is 10);
+
+A higher number of CV folds improves the accuracy of the CV RMSE estimates and reduces the bias due to using a smaller sample than the final training set, but it increases computing time. 
+
+6. **maxcompete**: number of competing splits that were nearly enacted to be stored (default value is 4);
+
+Since the model investigates all possible splits, this paramter has no effect on running time. It also doesn't affect the final model, but it does affec the variable importance statistics, which is just the scaled sum of all model improvements (scaled to the TSS) for the most promising stored candidate splits. 
+
+7. **maxsurrogate**: the number of surrogates to store at every split (default is 5)
+
+A surrogate is variable used to split those observations that have missing values for the splitting variable. For example, the splitting algorithm may determine that splitting households by whether or not they own a computer leads to a large improvement in model fit. But what do we do with households that have missing values for the computer ownership variable? In these cases you can specify that rpart should find a surrogate for computer ownership: a different variable that splits the sample in a very similar way as computer ownership. This would typically be a variable that is highly correlated to the splitting variable, but which has a small overlap in missing values. Households with missing values for the splitting variable will then be split according to the surrogate variable. Allowing for surrogates increases the required running time, but produces more accurate predictions, particularly if there are many missing values in the data. 
+
+8. **usesurrogate**: how to apply the information from the surrogates to allocating variables with missing split variables  (default is 2, which will use all the available surrogates to split, and send households with missing values for all surrogates in the majority direction).
+
+9. **surrogatestyle**: determines how the best surrogate is identified  (default is 0, which is to use the total number of correct classification - as opposed to the share - for a potential surrogate variable). 
+
+Let's start by running a simple regression tree using `rpart` with a conservative value for the cp parameter and the rest of the options at their default values. The `rpart` function checks whether the outcome is categorical or continuous and determines the goodness-of-fit measuare accordingly.
+
+```{r eval = F}
+rpart.simple = rpart(income ~ ., data=training,control=rpart.control(minsplit = 20, minbucket = round(20/3), cp = 0.03, maxcompete = 4, maxsurrogate = 0, usesurrogate = 2, xval = 10, surrogatestyle = 0, maxdepth = 30))
+```
+
+```{r echo=F}
+rpart.simple.tab
+```
+At less than a second of running time, this model is much quicker to estimte than the linear regression. It can also be stored in under 1MB.
+
+The estimated tree can be plotted:
+```{r}
+plot(rpart.simple, uniform=TRUE, main="Regression Tree for NIDS Income")
+text(rpart.simple, use.n=TRUE, all=TRUE, cex=.8)
+```
+
+We see that the training sample was split four times, which produces 5 terminal nodes (always one more than the number of splits). The root node was first split by whether or not the household owns a computer. By convention, these trees are drawn so that the branch to the left represents observations that meet the condition (in this case computer.yes < 0.5, i.e. households that do not own a computer), and those that do not meet the condition are branched out to the right. The condition is usually stated so that the branch to the left have a lower average value of the outcome variable. Households that do not own a computer are then split by household size between 2 and 3 members. Households with 3 or more members (the branch to the left) are further split by whether or not they own a microwave; households with 2 or fewer members are split by whether they own a washer.
+
+Interestingly, household size and asset ownership are the household attributes that most effectively splits households into different income bins. One could interpret this model as showing that high-income households tend to own a computer. Middle-income households do not own a computer, but tend to have fewer than 3 members, wheras poor households have three or more members (they also do not own a computer). The middle-class can be further disaggregated into upper-middle and lower-middle, depending on whether they own a washer. Splitting the poor into very poor and marginally poor is most accurately achieved according to whether they own a microwave. 
+
+This regression tree model provides a relatively straightforward means of classifying households into different income brackets, which is arguably easier to understand than the results from a linear regression. However, we should be concerned that by oversimplifying the link between household attributes and income, it produces a less accurate prediction of household income than could be achieved by a richer model.
+
+Printing the final model and running `rpart`'s summary command both produce various statistics to help us evaluate and interpret this model.
+
+```{r}
+rpart.simple
+summary(rpart.simple)
+```
+
+
+We see that before any splits occur (i.e. at the root) the sample has a MSE of 1.399056, which implies a TSS = MSE*N = 6550.38. The MSE is also called the root node error and the TSS is sometimes referred to as the deviance. 
+
+The sum of the RSS in the two nodes after the first split on computer.yes is 4518.7630 + 588.3661 = 5107.1291. Expressed as a proportion of the root SST, this gives a relative error of 0.7797, which is associated with the first split. The complexity parameter (cp) threshold associated with this split is the reduction in the this relative error of 0.2203. Since this split was enacted, it must represent the largest possible reduction in the relative error rate. We specified that the 5 best competitor splits should be stored for each split and the output shows us that the other candidates were computer.no (because of missing values in computer ownership, splitting on computer.no and computer.yes is not exactly the same), washer.no , washer.yes and microwave. 
+
+
+The second split occurs in the left branch (or left son) of the first split (or parent), where the RSS was 4518.7630. It produces two nodes with RSS's of 2095.1860 and 1606.0200 respectively, or 3701.206 in total. The reduction in the RSS is 4518.7630 - 3701.206 = 817.557, which is 0.1248 when expressed as a proportion of the original TSS. This is the cp associated with the second split. Again, we can compare this best split (on members) to the next most promising splits (water source, washer2, microwave2, microwave.no).
+
+
+All four of the splits can be analysed in this way, although this doesn't really add much to our understanding of the model.
+
+
+Since later splits usually lead to smaller improvements in the model fit, the variable importance measure attaches more weights to splits considered earlier. Counterintuitively, it also means that if a binary variable was chosen for the very first split, it will only be counted once and hence seem less important, particulalry if maxcompete is set at a high value.
+
+In the regression tree example above I took a `cp` value of 0.03. This produces a simpler tree with fewer splits than would be the case for the default `cp` value of 0.01. In practice we will want to tune this (and other) model hyperparameters to find the values that produce the best out-of-sample predictions. It is useful to investigate how the model performs at different `cp` values.
+
+```{r}
+printcp(rpart.simple)
+plotcp(rpart.simple)
+```
+
+This table shows the relative errors (rel errors) and cp values associated with different splits, as well as the cv rel error values and their standard deviations. On the graph, a horizontal line is drawn 1 standard error above the minimum of the curve, which can assist in choosing the 1SE cp value (providing the minimum value appears on the graph). However,  our example tree was estimated with a relatively high cp value to ensure a simple tree, and so we see that the cp function is still decreasing at the lowest observable value of cp. 
+
+Let's now see what happens when we use `caret`'s train function to tune the cp parameter to its optimal value. We can use the `tuneGrid` option to specify which parameter values should be compared. Alternatively, the `tuneLength` option can be used to merely specify the number of trial parameter values, in which case `rpart` will choose these values itself. We start with the latter option.
+
+```{r eval=F}
+train(formula, data=training, method = 'rpart', trControl=fitControl, tuneLength = 10)
+```
+
+```{r echo=F}
+rpart.fit0
+```
+The train function was allowed to choose 10 different cp values to evaluate. The output shows that the RMSE is increasing for all selected candidate values of cp between 0.007181379 and 0.220330880, which suggests that the RMSE minimising value of `cp` is lower than the lowest value considered. We therefore have to repeat the search over a manually selected range of smaller cp values. The fact that we are off the usual grid seems to suggest that our model calls for a larger tree than is usually optimal. We now specify the train function to estimate a `rpart` model for cp values that increases in increments of 0.0001 between 0 and 0.002.
+
+```{r eval = F}
+Grid <- expand.grid(cp=seq(0, 0.002, 0.0001))
+train(formula, data=training, method = 'rpart', trControl = fitControl, tuneGrid = Grid)
+```
+
+```{r echo = F}
+rpart.fit1
+trellis.par.set(caretTheme())
+rpart.fit1.plot
+```
+
+The CV RMSE is minimized for cp = 0.0008, which is much smaller than the default value. Even though smaller values of this parameter would produce better in-sample fit (not shown on the graph), this would be a result of overfitting which would reduce our model's predictive accuracy. This tuned parameter can now be used to estimate the tree over the full training sample.
+
+
+```{r eval = F}
+train(formula, data=training, method = 'rpart', trControl = fitControl, tuneGrid = expand.grid(cp = 0.008))
+```
+
+```{r echo=F}
+rpart.fit.rmse
+rpart.fit.tab
+```
+
+
+```{r echo = F}
+rpart.fit$finalModel
+plot(rpart.fit$finalModel, uniform=TRUE, main="Regression Tree for NIDS Income")
+text(rpart.fit$finalModel, use.n=TRUE, all=TRUE, cex=.8)
+plot(varImp(rpart.fit))
+varImp(rpart.fit)
+```
+This is a very large model with 93 terminal nodes. Calling the final model shows model node numbers into the 2000s, but these numbers enumerate all of the potential splits, inluding splits that were not enacted due to too small bins or too small an improvement in fit. The model has a depth of 12, which is too deep to sensibly plot or try to interepret. 
+
+Note that the same model can be obtained using any of the following commands:
+
+```{r eval = F}
+rpart(income ~ .,data=training,control=rpart.control(cp = 0.0008))
+
+rpart(income ~ ., method="anova", data=training,control=rpart.control(minsplit = 20, minbucket = round(20/3), cp = 0.0008, maxcompete = 4, maxsurrogate = 5, usesurrogate = 2, xval = 10,surrogatestyle = 0, maxdepth = 30))
+
+rpart(income ~ ., method="anova", data=training,control=rpart.control(cp = 0.0008))
+
+train(income ~ ., training, method = "rpart", control = rpart.control(minsplit = 20, minbucket = round(20/3),maxcompete = 4, maxsurrogate = 5, usesurrogate = 2, xval = 10,surrogatestyle = 0, maxdepth = 30),tuneGrid=expand.grid(cp=0.0008))
+
+train(income ~ ., training, method = "rpart", control = rpart.control(minsplit = 20, minbucket = round(20/3),maxdepth = 30),tuneGrid=expand.grid(cp=0.0008))
+```
+
+### 4.1 `rpart1SE` function
+
+The one standard error rule suggests that we should choose the simplest model which performs no more than one standard error worse than the best fit. In Monte-Carlo trials, this method of tuning has proven very reliable for screening out "pure noise" variables in data sets.
+
+```{r eval = F}
+Grid <- expand.grid(cp=c(seq(0, 0.002, 0.0001),seq(0.002, 0.003, 0.0002)))
+train(formula, data=training, method = 'rpart', trControl=fitControl,tuneGrid=Grid)
+```
+
+```{r echo= F}
+rpart.fit11$results %>%
+  mutate(RMSESD_low = RMSE - (RMSESD/sqrt(rpart.fit11$control$number * rpart.fit11$control$repeats)),
+         RMSESD_high = RMSE + (RMSESD/sqrt(rpart.fit11$control$number * rpart.fit11$control$repeats))) %>%
+  ggplot(aes(x = cp)) +
+  geom_line(aes(y = RMSE)) +
+  geom_point(aes(y = RMSE)) +
+  xlim(-0.0001, 0.0031) +
+  #scale_x_continuous() + #correct spacing of the cost parameter
+  ylim(0.8, 0.86) + #set correct y-axis
+  geom_errorbar(aes(ymin=RMSESD_low, ymax=RMSESD_high), 
+                colour="gray50",
+                width=.0001) +
+  labs(title="Estimates of prediction accuracy\nwith 1 SD errror bars")
+```
+
+Eyeballing the graph suggests that a cp value of around 0.0024 would produce a RMSE that is only 1 SD worse than the optimal RMSE. We can estimate what this model looks like:
+
+
+```{r eval = F}
+rpart.fit.1SD <- train(formula, data=training, method = 'rpart', trControl=fitControl,tuneGrid=expand.grid(cp=0.0024))
+
+```
+
+```{r echo = F}
+rpart.fit.1SD.rmse
+rpart.fit.1SD.tab
+```
+
+```{r echo = F}
+
+varImp(rpart.fit.1SD)
+rpart.fit.1SD$finalModel
+plot(rpart.fit.1SD$finalModel, uniform=TRUE, main="Regression Tree for NIDS Income")
+text(rpart.fit.1SD$finalModel, use.n=TRUE, all=TRUE, cex=.8)
+```
+
+Choosing a cp value that is 1SD higher than the optimal value produces a considerably simpler tree, although it is perhaps still too complicated to interpret in terms of the decision rules. It has a depth of 8 and only 25 terminal nodes.
+ 
+`caret` also offers an automated way to select the cp value that is 1SD larger than RMSE minimising value: method `rpart1SE`
+
+```{r eval = F}
+train(formula, data=training, method = 'rpart1SE', trControl=fitControl, tuneLength = 10)
+```
+
+This model produces an RMSE of 0.85, which is considerably worse. 
+An alternative way to achieve the same thing (but which seem to work better):
+
+```{r eval = F}
+rpart.fit.1SD.rmse
+rpart.fit.1SD.tab
+```
+
+```{r eval = F}
+rpart1SE.fit1=rpart(income ~ ., method="anova", data=training,control=rpart.control(cp = 0.0008))
+plotcp(rpart1SE.fit1)
+rpart1SE.fit1=rpart(income ~ ., method="anova", data=training,control=rpart.control(cp = 0.004))
+```
+
+
+Cp is the only value that caret allow the rpart function to tune. However, rpart2 can be used to tune the maxdepth
+
+```{r eval = FALSE}
+set.seed(123)
+train(formula, data=training, method = 'rpart2', trControl=fitControl, tuneLength = 10)
+```
+The RMSE are considerably worse than those achieved for rpart. The reason is that those allowed cp to vary for maxdepth values of 30 (which was never a binding constraint). In contrast, rpart2 fixes cp = 0.01, which is much higher than is optimal for this model, and then varies the values of maxdepth. It doesnt help to allow for higher maxdepth values than 10, since at cp = 0.01 the optimal tree depth is 9. 
+
+```{r eval = FALSE}
+Grid <- expand.grid(maxdepth=seq(15, 30, 2))
+train(formula, data=training, method = 'rpart2', trControl=fitControl,tuneGrid=Grid, control=rpart.control(cp = 0.0001,minsplit = 20))
+```
+
+```{r echo = FALSE}
+rpart2.fit1
+trellis.par.set(caretTheme())
+rpart2.fit1.plot=plot(rpart2.fit1)
+```
+
+
+At a sufficiently low cp value, maxdepth becomes a U-shaped function of the tuning parameter. However for this application , it does not achieve values superior to those obtained with rpart, so we will not pursue this issue further.
