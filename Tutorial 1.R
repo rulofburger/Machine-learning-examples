@@ -145,7 +145,7 @@ print(fit_rpart_caret)
 # trainTransformed <- predict(preProcValues, training)
 # glimpse(trainTransformed)
 
-lambda <- 10^seq(-3, 3, length = 100)
+lambda <- 10^seq(-4, 0, length = 100)
 
 set.seed(41094)
 model_ridge <- train(
@@ -156,9 +156,9 @@ model_ridge <- train(
   tuneGrid = expand.grid(alpha = 0, lambda = lambda)
 )
 # Model coefficients
-coef(ridge$finalModel, ridge$bestTune$lambda)
+coef(model_ridge$finalModel, model_ridge$bestTune$lambda)
 # Make predictions
-predictions <- ridge %>% predict(df_test_pre_proc)
+predictions <- model_ridge %>% predict(df_test_pre_proc)
 # Model prediction performance
 data.frame(
   RMSE = RMSE(predictions, df_test_pre_proc$log_income_pc),
@@ -176,7 +176,7 @@ model_lasso <- train(
 # Model coefficients
 
 # Make predictions
-predictions <- model_lasso$finalModel %>% predict(df_test_pre_proc)
+predictions <- model_lasso %>% predict(df_test_pre_proc)
 # Model prediction performance
 data.frame(
   RMSE = RMSE(predictions, df_test_pre_proc$log_income_pc),

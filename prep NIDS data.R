@@ -20,7 +20,7 @@ Sys.setenv(JAVA_HOME='C:\\Program Files\\Java\\jre1.8.0_131')
 #Remove lists from memory and load data
 rm(list = ls())
 library(haven)
-NIDSdata <- read_dta("D:/My Documents/Reading group/Machine learning/R Resources/Data/NIDS/NIDS_data_w1.dta")
+NIDSdata <- read_dta("NIDS_data_w1.dta")
 save(NIDSdata, file="D:/My Documents/Reading group/Machine learning/R Resources/Data/NIDS/NIDSdata.rda")
 load("D:/My Documents/Reading group/Machine learning/R Resources/Data/NIDS/NIDSdata.rda")
 attach(NIDSdata, warn.conflicts = F)
