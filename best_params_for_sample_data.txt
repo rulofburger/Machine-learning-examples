@@ -1,0 +1,2 @@
+num_leaves,max_depth,subsample,colsample_bytree,min_child_weight,scale_pos_weight
+255,8,1,0.9,0,100

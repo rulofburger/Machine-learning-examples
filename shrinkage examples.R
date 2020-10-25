@@ -2,6 +2,7 @@
 
 library(haven)
 library(tidyverse)
+library(rattle)
 
 
 #> LOAD AND WRANGLE DATA ==== 
@@ -36,14 +37,13 @@ df_regr <- df_NIDSsmall %>%
 lm_fit <- lm(data = df_regr, formula = log_earnings ~ .)
 summary(lm_fit)
 
-ridge_model <- glmnet::glmnet(y = df_regr$log_earnings, x = df_regr %>% select(-log_earnings) %>% as.matrix, alpha = 0, lamda = 1)
+ridge_model <- glmnet::glmnet(y = df_regr$log_earnings, x = df_regr %>% select(-log_earnings) %>% as.matrix, alpha = 0)
 
 tmp <- as.data.frame(as.matrix(coef(ridge_model)))
 tmp$coef <- row.names(tmp)
 tmp <- reshape::melt(tmp, id = "coef")
 tmp$variable <- as.numeric(gsub("s", "", tmp$variable))
-tmp$lambda <- lasso_model$lambda[tmp$variable + 1]
-tmp$norm <- apply(abs(beta[-1,]), 2, sum)[tmp$variable + 1]
+tmp$lambda <- ridge_model$lambda[tmp$variable + 1]
 ggplot(tmp[tmp$coef != "(Intercept)", ], aes(lambda, value, color = coef, linetype = coef)) + 
   geom_line() +
   scale_x_log10() + 
@@ -53,14 +53,13 @@ ggplot(tmp[tmp$coef != "(Intercept)", ], aes(lambda, value, color = coef, linety
   theme(legend.key.width = unit(3, "lines"))
 
 
-lasso_model <- glmnet::glmnet(y = df_regr$log_earnings, x = df_regr %>% select(-log_earnings) %>% as.matrix, alpha = 1, lamda = 0.1)
+lasso_model <- glmnet::glmnet(y = df_regr$log_earnings, x = df_regr %>% select(-log_earnings) %>% as.matrix, alpha = 1)
 
 tmp <- as.data.frame(as.matrix(coef(lasso_model)))
 tmp$coef <- row.names(tmp)
 tmp <- reshape::melt(tmp, id = "coef")
 tmp$variable <- as.numeric(gsub("s", "", tmp$variable))
 tmp$lambda <- lasso_model$lambda[tmp$variable + 1]
-tmp$norm <- apply(abs(beta[-1,]), 2, sum)[tmp$variable + 1]
 ggplot(tmp[tmp$coef != "(Intercept)", ], aes(lambda, value, color = coef, linetype = coef)) + 
   geom_line() +
   scale_x_log10() + 
