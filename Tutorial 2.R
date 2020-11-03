@@ -159,6 +159,7 @@ tic.clearlog()
 
 model_treebag
 varImp(model_treebag)
+plot(varImp(model_treebag), top = 10)
 
 # Predict outcomes for test subset using model estimated on train set
 df_predict_treebag <- model_treebag$finalModel %>% 
